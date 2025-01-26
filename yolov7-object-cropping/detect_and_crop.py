@@ -18,6 +18,38 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized,
 from scipy.ndimage import rotate
 import numpy as np
 import logging
+from RPLCD.i2c import CharLCD
+import RPi.GPIO as GPIO
+import re
+
+lcd = CharLCD('PCF8574', 0x27)
+SERVO_PIN = 18
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+
+pwm = GPIO.PWM(SERVO_PIN, 50)
+pwm.start(0)
+
+
+def open_gate():
+    pwm.ChangeDutyCycle(7.5)
+    time.sleep(7)
+    pwm.ChangeDutyCycle(2.5)
+    time.sleep(1)
+
+
+def close_gate():
+    pwm.ChangeDutyCycle(2.5)
+    time.sleep(1)
+
+
+def display_on_lcd(license_plate, access_status):
+    lcd.clear()
+    lcd.write_string(f"Number: {license_plate}")
+    lcd.crlf()
+    lcd.write_string(f"Status: {access_status}")
+    time.sleep(3)
+    lcd.clear()
 
 
 def setup_logger():
@@ -78,7 +110,7 @@ def detect_and_analyze(save_img=False):
     names = model.module.names if hasattr(model, 'module') else model.names
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
 
-    allowed_database = {"ABC123", "XYZ789", "TEST456", "TX-9000"}
+    allowed_database = {"ABC123", "XYZ789", "TEST456", "TX-9000", "ABCD 012", "SN66 XMZ"}
 
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))
@@ -91,6 +123,11 @@ def detect_and_analyze(save_img=False):
             access_status = check_access(license_plate_text, allowed_database)
             with open("results/license_plates.txt", "a", encoding="utf-8") as f:
                 f.write(f"Crop {crp_cnt}: {license_plate_text} - {access_status}\n")
+            display_on_lcd(license_plate_text, access_status)
+
+            if access_status == "Access Granted":
+                open_gate()
+
             logger.info(f"Processed crop {crp_cnt}, text: {license_plate_text}, status: {access_status}")
         except Exception as e:
             logger.error(f"Error processing crop {crp_cnt}: {e}")
@@ -217,7 +254,10 @@ def analyze_text(image_path):
         preprocessed_img = preprocess_image(img)
 
         text = pytesseract.image_to_string(preprocessed_img, config='--psm 8')
-        return text.strip()
+        cleaned_text = re.sub(r'[^A-Za-z0-9 ]', '', text)
+        cleaned_text = cleaned_text.strip()
+
+        return cleaned_text
     except Exception as e:
         logger.error(f"Error analyzing text: {e}")
         return ""
@@ -246,3 +286,10 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         detect_and_analyze()
+
+try:
+    pwm.stop()
+    GPIO.cleanup()
+    lcd.clear()
+except RuntimeError as e:
+    logger.error(f"Error during GPIO cleanup: {e}")
